@@ -5,6 +5,7 @@ import random
 import numpy as np
 from config import settings
 from sim.utils import get_client_request_interval
+from sim.statistics import Statistics
 
 class Client:
     def __init__(self, env, network, ip_address, client_id):
@@ -33,32 +34,22 @@ class Client:
         self.dns_response_event = self.env.event()
         self.response_event = self.env.event()
         
-        # Metrics
-        self.metrics = {
-            'request_times': [],
-            'response_times': [],
-            'latencies': [],
-            'session_start_time': self.env.now,
-        }
+        self.dropped = False
         
         # Start the client process
         self.env.process(self.run())
+
+        Statistics.increment_client_present(self.env.now)
     
     def run(self):
         """Simulate the client's behavior."""
         while True:
-            # Decide whether to terminate
             if random.random() < settings.CLIENT_TERMINATION_PROBABILITY:
-                # Log termination
-                print(f"Client {self.client_id} terminating at time {self.env.now}")
                 break  # Client terminates
             
-            # Time when the request starts
             request_start_time = self.env.now
-            
-            # Check DNS cache validity
+
             if self.cache_valid and (self.env.now - self.cache_timestamp) < settings.CACHE_INVALIDATION_TIME:
-                # Use cached IP
                 resolved_ip = self.cached_ip
             else:
                 # Send DNS request
@@ -67,7 +58,8 @@ class Client:
                     'type': 'dns_request',
                     'domain': 'example.com',
                     'client_id': self.client_id,
-                    'timestamp': self.env.now
+                    'start_timestamp': request_start_time,
+                    'client_ip': self.ip_address
                 }
                 self.network.send(self.ip_address, settings.DNS_SERVER_IP, dns_request_message)
                 # Wait for DNS response
@@ -80,24 +72,30 @@ class Client:
                 'type': 'request',
                 'data': '...',
                 'client_id': self.client_id,
-                'timestamp': self.env.now
+                'start_timestamp': self.env.now,
+                'client_ip': self.ip_address,
+                'src_entity': self.network.get_entity_by_ip(self.ip_address),
             }
             self.network.send(self.ip_address, resolved_ip, request_message)
             # Wait for response
             yield self.response_event
             
-            # Calculate latency and log metrics
-            response_time = self.env.now
-            latency = response_time - request_start_time
-            self.metrics['request_times'].append(request_start_time)
-            self.metrics['response_times'].append(response_time)
-            self.metrics['latencies'].append(latency)
-            
-            print(f"Client {self.client_id} received response at time {self.env.now:.4f}, latency: {latency:.4f} seconds")
-            
+            if not self.dropped:
+                Statistics.increment_total_requests_processed(self.env.now)
+                
+                # Calculate latency and log metrics
+                response_time = self.env.now
+                
+                latency = response_time - request_start_time
+                Statistics.record_client_latency(request_start_time, latency)
+
+            self.dropped = False
+
             # Wait for time q before next request
             q = get_client_request_interval()
             yield self.env.timeout(q)
+        Statistics.decrement_client_present(self.env.now)
+
     
     def receive_message(self, src_entity, message):
         """Handle incoming messages."""
@@ -111,5 +109,11 @@ class Client:
         elif message['type'] == 'response':
             # Signal that the response has been received
             self.response_event.succeed()
+        elif message['type'] == 'drop_server':
+            self.dropped = True
+            self.response_event.succeed()
+        elif message['type'] == 'drop_dns':
+            self.dropped = True
+            self.dns_response_event.succeed()
         else:
-            print(f"Client {self.client_id} received unknown message type at time {self.env.now}")
+            pass

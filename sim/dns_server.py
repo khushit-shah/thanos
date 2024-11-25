@@ -4,6 +4,7 @@ import simpy
 import random
 from config import settings
 from sim.utils import get_dns_service_time
+from sim.statistics import Statistics
 
 class DNSServer:
     def __init__(self, env, network, ip_address, lb_strategy):
@@ -39,9 +40,12 @@ class DNSServer:
         while True:
             # Wait for the next DNS request
             request = yield self.queue.get()
+
+            Statistics.record_dns_queue_size(self.env.now, len(self.queue.items))
+
             # Process the request
-            self.env.process(self.process_request(request))
-    
+            yield self.env.process(self.process_request(request))
+
     def receive_message(self, src_entity, message):
         """Handle incoming messages."""
         if message['type'] == 'dns_request':
@@ -54,9 +58,14 @@ class DNSServer:
                     'arrival_time': self.env.now
                 })
             else:
-                # TODO: the message should be dropped, the cliend must be notified about the drop.
                 # Queue is full; drop the request
                 print(f"DNS server queue full. Dropping request from Client {message['client_id']} at time {self.env.now}")
+                self.network.send(self.ip_address, self.network.get_ip_by_entity(src_entity), {
+                    'type': 'drop_dns',
+                    'data': 'queue full',
+                    'client_id': message['client_id']
+                })
+            Statistics.record_dns_queue_size(self.env.now, len(self.queue.items))
         else:
             print(f"DNS Server received unknown message type at time {self.env.now}")
     

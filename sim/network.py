@@ -20,6 +20,11 @@ class Network:
         self.entities[ip_address] = entity
         self.ip_addresses[entity] = ip_address
 
+    def unregister_entity(self, entity):
+        """Unregister an entity."""
+        ip_address = self.ip_addresses.pop(entity)
+        self.entities.pop(ip_address)
+
     def get_entity_by_ip(self, ip_address):
         """Retrieve the entity object associated with an IP address."""
         return self.entities.get(ip_address)
@@ -66,9 +71,9 @@ class Network:
             delay_key = 'dns_server_to_client'
         else:
             delay_key = f'{src_type}_to_{dest_type}'
-
+        
         # Get the delay from settings
-        delay = settings.TRANSPORT_DELAYS.get(delay_key, 0)
+        delay = settings.TRANSPORT_DELAYS.get(delay_key)
         return delay
 
     def deliver_message(self, src_entity, dest_entity, message, delay):

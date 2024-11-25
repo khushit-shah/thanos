@@ -3,6 +3,7 @@
 import simpy
 from config import settings
 from sim.utils import get_server_service_time
+from sim.statistics import Statistics
 
 class Server:
     def __init__(self, env, network, ip_address):
@@ -26,16 +27,22 @@ class Server:
         # Start the server process
         self.env.process(self.run())
 
-        # TODO: Server's perfomance metrics should be added here.
+        self.busy_time = 0;
+        self.start_time = self.env.now
     
     def run(self):
         """Process incoming requests."""
         while True:
             # Wait for the next request
             request = yield self.queue.get()
+
+            # record the queue size.
+            Statistics.record_server_queue_size(self.ip_address, self.env.now, len(self.queue.items))
+
             # Process the request
-            self.env.process(self.process_request(request))
-    
+            yield self.env.process(self.process_request(request))
+
+
     def receive_message(self, src_entity, message):
         """Handle incoming messages."""
         if message['type'] == 'request':
@@ -48,13 +55,20 @@ class Server:
                     'arrival_time': self.env.now
                 })
             else:
-                # TODO: the message should be dropped, the cliend must be notified about the drop.
                 # Queue is full; drop the request
-                print(f"Server {self.ip_address} queue full. Dropping request from Client {message['client_id']} at time {self.env.now}")
+                self.network.send(self.ip_address, message['client_ip'], {
+                    'type': 'drop_server',
+                    'data': 'queue full',
+                    'server_ip': self.ip_address,
+                    'client_id': message['client_id'],
+                    'timestamp': self.env.now
+                })
                 # Optionally, send an error message back to the sender
+                Statistics.increment_server_dropped_requests(self.ip_address, self.env.now)
+            
+            Statistics.record_server_queue_size(self.ip_address, self.env.now, len(self.queue.items))
         else:
-            print(f"Server {self.ip_address} received unknown message type at time {self.env.now}")
-    
+            pass
     def process_request(self, request):
         """Process a client request and send a response after a processing time."""
         # Simulate processing time
@@ -64,18 +78,21 @@ class Server:
         src_entity = request['src_entity']
         message = request['message']
         
+        self.busy_time += service_time
+
         # Create response message
         response_message = {
             'type': 'response',
             'data': 'response data',
             'server_ip': self.ip_address,
             'client_id': message['client_id'],
+            'client_ip': message['client_ip'],
             'timestamp': self.env.now
         }
         
         # Determine where to send the response
         client_ip = message.get('client_ip')
-        via_load_balancer = message.get('via_load_balancer', False)
+        via_load_balancer = message.get('through_lb', False)
         
         if via_load_balancer:
             # Send response back through the load balancer
@@ -83,3 +100,11 @@ class Server:
         else:
             # Send response directly to the client
             self.network.send(self.ip_address, client_ip, response_message)
+
+    def get_utilization(self):
+        total_time = self.env.now
+        utilization = (self.busy_time / (total_time - self.start_time) * 100 if total_time > 0 else 0)
+        return utilization
+
+    def get_connections(self):
+        return len(self.queue.items)
